@@ -32,10 +32,14 @@
             <artifactId>spring-boot-starter-validation</artifactId>
         </dependency>
 
-        <!-- Security (JWT arrives in Phase 1) -->
+        <!-- Security: BCrypt passwords + JWT (HS256) via Spring's OAuth2 resource server -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-security</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-oauth2-resource-server</artifactId>
         </dependency>
 
         <!-- Health checks: /actuator/health -->
