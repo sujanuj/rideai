@@ -1,13 +1,16 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
 import AppShell from "@/components/AppShell";
 import MapView from "@/components/MapView";
-import { Button, Card, ErrorText, Stat } from "@/components/ui";
+import TripSummary from "@/components/TripSummary";
+import { Button, Card, ErrorText, LiveBadge, Stat } from "@/components/ui";
 import { api, ApiError, errorMessage } from "@/lib/api";
 import { DEFAULT_CENTER, distance, duration, money } from "@/lib/format";
 import { saveSession } from "@/lib/session";
-import type { Estimate, LatLng, Session, Trip } from "@/lib/types";
+import { useSocket, useSubscription } from "@/lib/socket";
+import type { Estimate, LatLng, Session, Trip, TripSocketMessage } from "@/lib/types";
 import { usePolling } from "@/lib/usePolling";
 
 export default function RiderPage() {
@@ -30,11 +33,14 @@ function RiderScreen({ session }: { session: Session }) {
   const [estimate, setEstimate] = useState<Estimate | null>(null);
   const [trip, setTrip] = useState<Trip | null>(null);
   const [cars, setCars] = useState<LatLng[]>([]);
+  const [history, setHistory] = useState<Trip[]>([]);
+  const [insightPing, setInsightPing] = useState(0);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [resumed, setResumed] = useState(false);
 
   const active = trip && !["COMPLETED", "CANCELLED"].includes(trip.status);
+  const { client, connected } = useSocket(token);
 
   async function call<T>(fn: () => Promise<T>): Promise<T | undefined> {
     setBusy(true);
@@ -49,7 +55,7 @@ function RiderScreen({ session }: { session: Session }) {
     }
   }
 
-  // On first load, pick up an active trip if there is one (e.g. after a page refresh).
+  // On first load, resume an active trip if there is one (e.g. after a page refresh).
   usePolling(
     async () => {
       const current = await api<Trip | null>("/trips/current", { token });
@@ -60,23 +66,40 @@ function RiderScreen({ session }: { session: Session }) {
     !resumed,
   );
 
-  // Follow the active trip.
+  // Live updates for the current trip: status changes, driver position, "summary ready".
+  useSubscription<TripSocketMessage>(client, connected, trip ? `/topic/trips/${trip.id}` : null, (msg) => {
+    if (msg.type === "trip") setTrip(msg.trip);
+    else if (msg.type === "location")
+      setTrip((t) => (t && t.driver ? { ...t, driver: { ...t.driver, position: { lat: msg.lat, lng: msg.lng } } } : t));
+    else if (msg.type === "insight") setInsightPing((n) => n + 1);
+  });
+
+  // Safety net: poll the trip (fast if the socket is down, slow otherwise).
   usePolling(
     async () => {
       if (!trip) return;
       setTrip(await api<Trip>(`/trips/${trip.id}`, { token }));
     },
-    2_000,
+    connected ? 15_000 : 2_000,
     Boolean(active),
   );
 
-  // Show available cars around the pickup (or the map center) while booking.
+  // Available cars around the pickup (or the map center) while booking.
   const around = pickup ?? DEFAULT_CENTER;
   usePolling(
     async () => {
       setCars(await api<LatLng[]>(`/drivers/nearby?lat=${around.lat}&lng=${around.lng}`, { token }));
     },
     4_000,
+    !active,
+  );
+
+  // Recent trips (refreshes when a trip ends).
+  usePolling(
+    async () => {
+      setHistory(await api<Trip[]>("/trips/me", { token }));
+    },
+    30_000,
     !active,
   );
 
@@ -112,12 +135,14 @@ function RiderScreen({ session }: { session: Session }) {
     setPickup(null);
     setDropoff(null);
     setEstimate(null);
+    setInsightPing(0);
   }
 
   const showPickup = trip ? trip.pickup : pickup;
   const showDropoff = trip ? trip.dropoff : dropoff;
   const driverPos = active ? trip?.driver?.position ?? null : null;
   const fitTo = [showPickup, showDropoff, driverPos].filter((p): p is LatLng => Boolean(p));
+  const pastTrips = history.filter((t) => t.id !== trip?.id).slice(0, 5);
 
   return (
     <div className="flex flex-1 flex-col md:flex-row">
@@ -166,10 +191,16 @@ function RiderScreen({ session }: { session: Session }) {
         {trip && (
           <Card className="flex flex-col gap-4">
             <div>
-              <div className="text-xs uppercase tracking-wide text-zinc-500">Trip #{trip.id}</div>
+              <div className="flex items-center justify-between text-xs uppercase tracking-wide text-zinc-500">
+                <span>Trip #{trip.id}</span>
+                {active && <LiveBadge connected={connected} />}
+              </div>
               <h2 className="text-lg font-semibold">{STATUS_TEXT[trip.status]}</h2>
               {trip.status === "REQUESTED" && (
                 <p className="text-sm text-zinc-500">We&apos;re offering your ride to the nearest drivers.</p>
+              )}
+              {trip.status === "ACCEPTED" && trip.pickupEtaSeconds != null && (
+                <p className="text-sm text-zinc-500">Arriving in about {duration(trip.pickupEtaSeconds)}.</p>
               )}
               {trip.status === "CANCELLED" && trip.cancelReason && (
                 <p className="text-sm text-zinc-500">{humanReason(trip.cancelReason)}</p>
@@ -199,6 +230,29 @@ function RiderScreen({ session }: { session: Session }) {
               </Button>
             )}
             {!active && <Button onClick={startOver}>Book another ride</Button>}
+          </Card>
+        )}
+
+        {trip?.status === "COMPLETED" && <TripSummary trip={trip} token={token} refreshKey={insightPing} />}
+
+        {!active && pastTrips.length > 0 && (
+          <Card className="flex flex-col gap-2">
+            <h3 className="font-semibold">Recent trips</h3>
+            <ul className="flex flex-col divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
+              {pastTrips.map((t) => (
+                <li key={t.id}>
+                  <Link href={`/trips/${t.id}`} className="flex items-center justify-between py-2 hover:opacity-80">
+                    <span>
+                      {new Date(t.requestedAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })} ·{" "}
+                      {distance(t.distanceMeters)}
+                    </span>
+                    <span className={t.status === "COMPLETED" ? "" : "text-zinc-500"}>
+                      {t.status === "COMPLETED" ? money(t.fareCents) : t.status.toLowerCase()}
+                    </span>
+                  </Link>
+                </li>
+              ))}
+            </ul>
           </Card>
         )}
       </aside>

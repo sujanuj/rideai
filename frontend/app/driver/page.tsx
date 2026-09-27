@@ -3,11 +3,12 @@
 import { useState } from "react";
 import AppShell from "@/components/AppShell";
 import MapView from "@/components/MapView";
-import { Button, Card, ErrorText, Stat } from "@/components/ui";
+import { Button, Card, ErrorText, LiveBadge, Stat } from "@/components/ui";
 import { api, ApiError, errorMessage } from "@/lib/api";
 import { DEFAULT_CENTER, distance, duration, money, secondsUntil } from "@/lib/format";
 import { saveSession } from "@/lib/session";
-import type { DriverMe, LatLng, Session, Trip } from "@/lib/types";
+import { useSocket, useSubscription } from "@/lib/socket";
+import type { DriverMe, LatLng, Session, Trip, TripSocketMessage } from "@/lib/types";
 import { usePolling } from "@/lib/usePolling";
 
 export default function DriverPage() {
@@ -34,6 +35,7 @@ function DriverScreen({ session }: { session: Session }) {
   const [busy, setBusy] = useState(false);
 
   const online = me?.status === "AVAILABLE" || me?.status === "ON_TRIP";
+  const { client, connected } = useSocket(token);
 
   async function call<T>(fn: () => Promise<T>): Promise<T | undefined> {
     setBusy(true);
@@ -48,32 +50,55 @@ function DriverScreen({ session }: { session: Session }) {
     }
   }
 
-  // Driver profile + current trip (also restores state after a refresh).
-  usePolling(async () => {
-    const [profile, current] = await Promise.all([
-      api<DriverMe>("/drivers/me", { token }),
-      api<Trip | null>("/trips/current", { token }),
-    ]);
-    setMe(profile);
-    setPosition((p) => p ?? profile.position);
-    setTrip(current);
-  }, 3_000);
-
-  // Send our position every 3 seconds while online (Phase 3 moves this to WebSocket).
+  // Driver profile + current trip (also restores state after a refresh). Slow when the socket is up.
   usePolling(
     async () => {
-      if (position) await api("/drivers/me/location", { method: "PUT", token, body: position });
+      const [profile, current] = await Promise.all([
+        api<DriverMe>("/drivers/me", { token }),
+        api<Trip | null>("/trips/current", { token }),
+      ]);
+      setMe(profile);
+      setPosition((p) => p ?? profile.position);
+      setTrip(current);
+    },
+    connected ? 10_000 : 3_000,
+  );
+
+  // Ride offers are pushed to this driver only: /user/queue/offers.
+  useSubscription<Trip>(client, connected, "/user/queue/offers", (offered) => setOffer(offered));
+
+  // Changes to the current trip (e.g. the rider cancels) arrive live too.
+  useSubscription<TripSocketMessage>(client, connected, trip ? `/topic/trips/${trip.id}` : null, (msg) => {
+    if (msg.type !== "trip") return;
+    if (msg.trip.status === "CANCELLED") {
+      setTrip(null);
+      setError("The rider cancelled this trip.");
+      setMe((m) => (m ? { ...m, status: "AVAILABLE" } : m));
+    } else {
+      setTrip(msg.trip);
+    }
+  });
+
+  // Send our position every 3 s while online: over the socket when connected, else REST.
+  usePolling(
+    async () => {
+      if (!position) return;
+      if (client && connected) {
+        client.publish({ destination: "/app/driver/location", body: JSON.stringify(position) });
+      } else {
+        await api("/drivers/me/location", { method: "PUT", token, body: position });
+      }
     },
     3_000,
     online,
   );
 
-  // Look for ride offers while free.
+  // Backup check for offers (in case a push was missed while reconnecting).
   usePolling(
     async () => {
       setOffer(await api<Trip | null>("/drivers/me/offer", { token }));
     },
-    2_000,
+    connected ? 8_000 : 2_000,
     me?.status === "AVAILABLE",
   );
 
@@ -160,6 +185,11 @@ function DriverScreen({ session }: { session: Session }) {
               <h2 className="text-lg font-semibold">
                 {me?.status === "ON_TRIP" ? "On a trip" : online ? "Online, waiting for rides" : "You're offline"}
               </h2>
+              {online && (
+                <div className="text-xs">
+                  <LiveBadge connected={connected} />
+                </div>
+              )}
             </div>
             <span className={`h-3 w-3 rounded-full ${online ? "bg-green-500" : "bg-zinc-400"}`} />
           </div>

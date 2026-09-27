@@ -46,6 +46,8 @@ public final class TripDtos {
         Integer distanceMeters,
         Integer durationSeconds,
         Integer fareCents,
+        Integer pickupEtaSeconds,
+        Integer actualDistanceMeters,
         long riderId,
         String riderName,
         DriverInfo driver,

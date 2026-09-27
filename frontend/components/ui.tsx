@@ -41,3 +41,13 @@ export function Stat({ label, value }: { label: string; value: ReactNode }) {
     </div>
   );
 }
+
+/** Green dot when the WebSocket is connected. */
+export function LiveBadge({ connected }: { connected: boolean }) {
+  return (
+    <span className={`flex items-center gap-1 normal-case ${connected ? "text-green-600" : "text-zinc-500"}`}>
+      <span className={`h-2 w-2 rounded-full ${connected ? "animate-pulse bg-green-500" : "bg-zinc-400"}`} />
+      {connected ? "Live" : "Reconnecting"}
+    </span>
+  );
+}

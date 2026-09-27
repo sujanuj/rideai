@@ -10,6 +10,8 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@sentry/browser": "^11.0.0",
+    "@stomp/stompjs": "^7.3.0",
     "leaflet": "^1.9.4",
     "next": "16.3.6",
     "react": "19.2.8",

@@ -4,6 +4,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.stream.Collectors;
 
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
@@ -32,7 +33,8 @@ public class TripService {
     private static final int MAX_TRIP_METERS = 150_000;
 
     private final TripRepository trips;
-    private final TripEventRepository events;
+    private final TripEventRepository eventRows;
+    private final TripEventService events;
     private final UserRepository users;
     private final DriverRepository drivers;
     private final DriverService driverService;
@@ -40,11 +42,14 @@ public class TripService {
     private final RoutingService routing;
     private final FareCalculator fares;
     private final MatchingService matching;
+    private final TripPathService paths;
 
-    public TripService(TripRepository trips, TripEventRepository events, UserRepository users,
-                       DriverRepository drivers, DriverService driverService, DriverLocationService locations,
-                       RoutingService routing, FareCalculator fares, MatchingService matching) {
+    public TripService(TripRepository trips, TripEventRepository eventRows, TripEventService events,
+                       UserRepository users, DriverRepository drivers, DriverService driverService,
+                       DriverLocationService locations, RoutingService routing, FareCalculator fares,
+                       MatchingService matching, TripPathService paths) {
         this.trips = trips;
+        this.eventRows = eventRows;
         this.events = events;
         this.users = users;
         this.drivers = drivers;
@@ -53,6 +58,7 @@ public class TripService {
         this.routing = routing;
         this.fares = fares;
         this.matching = matching;
+        this.paths = paths;
     }
 
     // ---------- rider ----------
@@ -63,6 +69,10 @@ public class TripService {
             fares.fareCents(route.distanceMeters(), route.durationSeconds()), route.path(), route.source());
     }
 
+    /**
+     * Saves the trip and returns immediately. The RIDE_REQUESTED event goes to Kafka after commit,
+     * and MatchingListener finds a driver asynchronously.
+     */
     @Transactional
     public TripResponse request(long riderId, TripRequest req) {
         trips.findFirstByRiderIdAndStatusIn(riderId, TripStatus.ACTIVE).ifPresent(t -> {
@@ -73,13 +83,11 @@ public class TripService {
 
         Trip trip = trips.save(new Trip(riderId, req.pickup(), req.dropoff(),
             route.distanceMeters(), route.durationSeconds(), fare));
-        events.record(trip.getId(), "RIDE_REQUESTED", Map.of(
+        events.record(trip, "RIDE_REQUESTED", Map.of(
             "distanceMeters", route.distanceMeters(),
             "durationSeconds", route.durationSeconds(),
             "fareCents", fare,
             "routeSource", route.source()));
-
-        matching.offerNext(trip.getId());
         return toResponse(trip);
     }
 
@@ -98,8 +106,19 @@ public class TripService {
             throw ApiException.conflict("OFFER_UNAVAILABLE", "This ride was taken, cancelled, or the offer expired");
         }
         driverService.startTrip(driverId);
-        events.record(tripId, "DRIVER_ASSIGNED", Map.of("driverId", driverId));
-        return toResponse(load(tripId));
+        Trip trip = load(tripId);
+
+        // How far away is the driver? The trip monitor uses this ETA to spot a late pickup.
+        Optional<GeoPoint> driverAt = locations.position(driverId);
+        Map<String, Object> payload = new java.util.HashMap<>(Map.of("driverId", driverId));
+        driverAt.ifPresent(at -> {
+            Route toPickup = RoutingService.straightLine(at, trip.pickup());
+            trip.setPickupEtaS(Math.max(60, toPickup.durationSeconds()));
+            payload.put("pickupEtaSeconds", trip.getPickupEtaS());
+            payload.put("driverDistanceMeters", toPickup.distanceMeters());
+        });
+        events.record(trip, "DRIVER_ASSIGNED", payload);
+        return toResponse(trip);
     }
 
     @Transactional
@@ -113,17 +132,31 @@ public class TripService {
 
     @Transactional
     public TripResponse arrive(long tripId, long driverId) {
-        return driverMoves(tripId, driverId, TripStatus.ARRIVED, "DRIVER_ARRIVED");
+        return driverMoves(tripId, driverId, TripStatus.ARRIVED, "DRIVER_ARRIVED", Map.of());
     }
 
     @Transactional
     public TripResponse start(long tripId, long driverId) {
-        return driverMoves(tripId, driverId, TripStatus.IN_PROGRESS, "TRIP_STARTED");
+        return driverMoves(tripId, driverId, TripStatus.IN_PROGRESS, "TRIP_STARTED", Map.of());
     }
 
     @Transactional
     public TripResponse complete(long tripId, long driverId) {
-        TripResponse response = driverMoves(tripId, driverId, TripStatus.COMPLETED, "TRIP_COMPLETED");
+        Trip trip = load(tripId);
+        checkDriver(trip, driverId);
+
+        // Save what was actually driven (recorded from GPS points by the trip monitor).
+        Map<String, Object> payload = new java.util.HashMap<>();
+        paths.distanceMeters(tripId).ifPresent(meters -> {
+            trip.setActualDistanceM(meters);
+            payload.put("actualDistanceMeters", meters);
+        });
+        List<GeoPoint> path = paths.path(tripId);
+        if (path.size() >= 2) {
+            trips.saveRoute(tripId, toWkt(path));
+        }
+
+        TripResponse response = driverMoves(tripId, driverId, TripStatus.COMPLETED, "TRIP_COMPLETED", payload);
         driverService.finishTrip(driverId);
         return response;
     }
@@ -141,7 +174,7 @@ public class TripService {
         trip.moveTo(TripStatus.CANCELLED);
         String who = isRider ? "RIDER" : "DRIVER";
         trip.setCancelReason(reason == null || reason.isBlank() ? "CANCELLED_BY_" + who : reason.trim());
-        events.record(tripId, "TRIP_CANCELLED", Map.of("by", who, "reason", trip.getCancelReason()));
+        events.record(trip, "TRIP_CANCELLED", Map.of("by", who, "reason", trip.getCancelReason()));
         if (trip.getDriverId() != null) {
             driverService.finishTrip(trip.getDriverId());
         }
@@ -155,10 +188,23 @@ public class TripService {
         return toResponse(trip);
     }
 
+    /** For internal pushes (WebSocket) where access was checked at subscribe time. */
+    @Transactional(readOnly = true)
+    public TripResponse view(long tripId) {
+        return toResponse(load(tripId));
+    }
+
+    @Transactional(readOnly = true)
+    public Trip loadForUser(long tripId, long userId) {
+        Trip trip = load(tripId);
+        checkCanView(trip, userId);
+        return trip;
+    }
+
     @Transactional(readOnly = true)
     public List<TimelineEntry> timeline(long tripId, long userId) {
         checkCanView(load(tripId), userId);
-        return events.findByTripIdOrderByCreatedAtAscIdAsc(tripId).stream()
+        return eventRows.findByTripIdOrderByCreatedAtAscIdAsc(tripId).stream()
             .map(e -> new TimelineEntry(e.getType(), e.getPayload(), e.getCreatedAt()))
             .toList();
     }
@@ -178,14 +224,18 @@ public class TripService {
 
     // ---------- helpers ----------
 
-    private TripResponse driverMoves(long tripId, long driverId, TripStatus next, String eventType) {
+    private TripResponse driverMoves(long tripId, long driverId, TripStatus next, String eventType, Map<String, Object> payload) {
         Trip trip = load(tripId);
+        checkDriver(trip, driverId);
+        trip.moveTo(next);
+        events.record(trip, eventType, payload);
+        return toResponse(trip);
+    }
+
+    private static void checkDriver(Trip trip, long driverId) {
         if (!Long.valueOf(driverId).equals(trip.getDriverId())) {
             throw ApiException.forbidden("You are not the driver on this trip");
         }
-        trip.moveTo(next);
-        events.record(tripId, eventType);
-        return toResponse(trip);
     }
 
     private Route routeFor(GeoPoint pickup, GeoPoint dropoff) {
@@ -212,12 +262,20 @@ public class TripService {
         return trips.findById(tripId).orElseThrow(() -> ApiException.notFound("Trip"));
     }
 
+    /** WKT for PostGIS: LINESTRING(lng lat, lng lat, ...). */
+    private static String toWkt(List<GeoPoint> path) {
+        return path.stream()
+            .map(p -> p.lng() + " " + p.lat())
+            .collect(Collectors.joining(", ", "LINESTRING(", ")"));
+    }
+
     private TripResponse toResponse(Trip t) {
         String riderName = users.findById(t.getRiderId()).map(User::getFullName).orElse("Rider");
         DriverInfo driver = t.getDriverId() == null ? null : driverInfo(t.getDriverId(), t.getStatus());
         return new TripResponse(
             t.getId(), t.getStatus(), t.pickup(), t.dropoff(),
             t.getEstDistanceM(), t.getEstDurationS(), t.getFareCents(),
+            t.getPickupEtaS(), t.getActualDistanceM(),
             t.getRiderId(), riderName, driver, t.getOfferExpiresAt(),
             t.getRequestedAt(), t.getAcceptedAt(), t.getArrivedAt(), t.getStartedAt(),
             t.getCompletedAt(), t.getCancelledAt(), t.getCancelReason());

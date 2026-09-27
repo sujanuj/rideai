@@ -1,6 +1,6 @@
 # The whole system in containers (for demos):
 #   docker compose -f docker-compose.yml -f docker-compose.full.yml up --build
-# Then open http://localhost:3000
+# Then open http://localhost:3000  (secrets are read from ./.env if present)
 
 services:
   backend:
@@ -11,6 +11,11 @@ services:
       DB_PASSWORD: rideai
       REDIS_HOST: redis
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      WS_ALLOWED_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      SENTRY_ENVIRONMENT: docker
+      JWT_SECRET: ${JWT_SECRET:-sXqpPktAOzBe1o7vYN93l8VO254GSBGu2cBIqFF+6V8=}
     ports: ["8080:8080"]
     depends_on:
       postgres: { condition: service_healthy }
@@ -22,5 +27,17 @@ services:
       context: ./frontend
       args:
         BACKEND_URL: http://backend:8080
+        NEXT_PUBLIC_SENTRY_DSN: ${NEXT_PUBLIC_SENTRY_DSN:-}
     ports: ["3000:3000"]
+    depends_on: [backend]
+
+  # 15 fake drivers around ASU Tempe, so there's something to book
+  simulator:
+    image: node:22-alpine
+    working_dir: /app
+    volumes: ["./simulator:/app:ro"]
+    command: ["node", "simulate.mjs"]
+    environment:
+      API: http://backend:8080/api
+      DRIVERS: "15"
     depends_on: [backend]
