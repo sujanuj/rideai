@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Button, Card, ErrorText, Stat } from "@/components/ui";
 import { api, ApiError, errorMessage } from "@/lib/api";
-import { distance, duration, money } from "@/lib/format";
+import { distance, duration } from "@/lib/format";
 import type { Answer, Insight, Trip } from "@/lib/types";
 import { usePolling } from "@/lib/usePolling";
 
@@ -112,7 +112,6 @@ export default function TripSummary({ trip, token, refreshKey = 0 }: { trip: Tri
           <Chat tripId={trip.id} token={token} />
         </>
       )}
-      <p className="text-xs text-zinc-500">Paid {money(trip.fareCents)}</p>
     </Card>
   );
 }
