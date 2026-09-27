@@ -50,8 +50,11 @@ export const options = {
 const json = { headers: { "Content-Type": "application/json" } };
 const auth = (token) => ({ headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` } });
 
+// A 401 on first login just means "account doesn't exist yet"; don't count it as a failure.
+const loginParams = { ...json, responseCallback: http.expectedStatuses(200, 401) };
+
 function login(email, extra) {
-  let res = http.post(`${API}/auth/login`, JSON.stringify({ email, password: "loadtest-pass" }), json);
+  let res = http.post(`${API}/auth/login`, JSON.stringify({ email, password: "loadtest-pass" }), loginParams);
   if (res.status === 401) {
     res = http.post(
       `${API}/auth/register`,
