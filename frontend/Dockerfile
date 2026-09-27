@@ -9,7 +9,8 @@ FROM node:22-alpine AS build
 WORKDIR /app
 # Baked into the standalone server at build time (see next.config.ts)
 ARG BACKEND_URL=http://backend:8080
-ENV BACKEND_URL=$BACKEND_URL
+ARG NEXT_PUBLIC_SENTRY_DSN=
+ENV BACKEND_URL=$BACKEND_URL NEXT_PUBLIC_SENTRY_DSN=$NEXT_PUBLIC_SENTRY_DSN
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npm run build

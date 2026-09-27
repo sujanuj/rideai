@@ -80,6 +80,12 @@ public class Trip {
     @Column(name = "cancel_reason")
     private String cancelReason;
 
+    @Column(name = "pickup_eta_s")
+    private Integer pickupEtaS;
+
+    @Column(name = "actual_distance_m")
+    private Integer actualDistanceM;
+
     protected Trip() {
         // for JPA
     }
@@ -132,6 +138,22 @@ public class Trip {
 
     public boolean hasLiveOffer(Instant now) {
         return offeredDriverId != null && offerExpiresAt != null && offerExpiresAt.isAfter(now);
+    }
+
+    public void setPickupEtaS(Integer pickupEtaS) {
+        this.pickupEtaS = pickupEtaS;
+    }
+
+    public void setActualDistanceM(Integer actualDistanceM) {
+        this.actualDistanceM = actualDistanceM;
+    }
+
+    public Integer getPickupEtaS() {
+        return pickupEtaS;
+    }
+
+    public Integer getActualDistanceM() {
+        return actualDistanceM;
     }
 
     public void setCancelReason(String cancelReason) {

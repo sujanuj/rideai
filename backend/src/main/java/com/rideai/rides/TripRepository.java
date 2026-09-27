@@ -5,13 +5,24 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 
+import jakarta.persistence.LockModeType;
+
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 public interface TripRepository extends JpaRepository<Trip, Long> {
+
+    /**
+     * SELECT ... FOR UPDATE: the Kafka matching consumer and the scheduler may try to match the
+     * same trip at the same moment; the row lock makes the second one wait and then see the offer.
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select t from Trip t where t.id = :id")
+    Optional<Trip> findByIdForUpdate(@Param("id") long id);
 
     Optional<Trip> findFirstByRiderIdAndStatusIn(long riderId, Collection<TripStatus> statuses);
 
@@ -28,6 +39,15 @@ public interface TripRepository extends JpaRepository<Trip, Long> {
 
     @Query("select t from Trip t where t.riderId = :userId or t.driverId = :userId order by t.requestedAt desc")
     List<Trip> findHistory(@Param("userId") long userId, Pageable page);
+
+    /** Store the route actually driven as a PostGIS line (for maps and spatial queries later). */
+    @Modifying
+    @Query(value = "UPDATE trips SET route = ST_GeogFromText(:wkt) WHERE id = :tripId", nativeQuery = true)
+    void saveRoute(@Param("tripId") long tripId, @Param("wkt") String wkt);
+
+    long countByRiderIdAndStatus(long riderId, TripStatus status);
+
+    List<Trip> findByRiderIdAndStatusAndIdNotOrderByRequestedAtDesc(long riderId, TripStatus status, long excludeId, Pageable page);
 
     /**
      * Accept is a single conditional UPDATE, so two drivers (or two clicks) can never both win:

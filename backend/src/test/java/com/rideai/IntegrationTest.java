@@ -4,9 +4,11 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 
+import java.time.Duration;
 import java.util.Map;
 import java.util.UUID;
 
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.BeforeEach;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -34,6 +36,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 @Import(TestcontainersConfig.class)
 @TestPropertySource(properties = {
     "rideai.routing.enabled=false",       // no internet calls in tests
+    "rideai.ai.api-key=",                 // never call Claude from tests, even if .env has a key
+    "sentry.dsn=",
     "rideai.matching.sweep-interval=500ms"
 })
 public abstract class IntegrationTest {
@@ -65,7 +69,7 @@ public abstract class IntegrationTest {
 
     // ---------- helpers ----------
 
-    protected record Account(long id, String token) {
+    public record Account(long id, String token) {
     }
 
     protected Account registerRider() throws Exception {
@@ -117,6 +121,13 @@ public abstract class IntegrationTest {
 
     protected ResultActions getAs(Account who, String path) throws Exception {
         return perform(get(path), who, null);
+    }
+
+    /** Matching runs asynchronously (Kafka), so wait for the offer to reach the driver. */
+    protected void awaitOffer(Account driver, long tripId) {
+        Awaitility.await().atMost(Duration.ofSeconds(20)).pollInterval(Duration.ofMillis(200)).untilAsserted(() ->
+            getAs(driver, "/api/drivers/me/offer")
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.id").value(tripId)));
     }
 
     protected JsonNode read(MvcResult result) throws Exception {

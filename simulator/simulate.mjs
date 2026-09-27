@@ -248,7 +248,24 @@ class SimDriver {
 
 // ---------- main ----------
 
+/** Wait for the backend (useful under docker compose, where it starts after us). */
+async function waitForApi() {
+  for (let attempt = 1; attempt <= 60; attempt++) {
+    try {
+      const res = await fetch(`${API}/ping`, { signal: AbortSignal.timeout(2000) });
+      if (res.ok) return;
+    } catch {
+      // not up yet
+    }
+    if (attempt === 1) console.log(`Waiting for the backend at ${API} …`);
+    await sleep(2000);
+  }
+  console.error(`Backend not reachable at ${API}. Is it running?`);
+  process.exit(1);
+}
+
 async function main() {
+  await waitForApi();
   console.log(`Starting ${DRIVERS} simulated drivers around ${CENTER.lat}, ${CENTER.lng} → ${API}`);
   const drivers = [];
   for (let i = 1; i <= DRIVERS; i++) {

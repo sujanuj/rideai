@@ -21,7 +21,7 @@ import com.rideai.drivers.DriverLocationService.NearbyDriver;
 import com.rideai.drivers.DriverRepository;
 import com.rideai.drivers.DriverStatus;
 import com.rideai.rides.Trip;
-import com.rideai.rides.TripEventRepository;
+import com.rideai.rides.TripEventService;
 import com.rideai.rides.TripRepository;
 import com.rideai.rides.TripStatus;
 
@@ -30,10 +30,8 @@ import com.rideai.rides.TripStatus;
  *   1. GEOSEARCH Redis for available drivers near the pickup, nearest first.
  *   2. Skip drivers we already tried, drivers holding another offer, and anyone not AVAILABLE.
  *   3. Offer the trip to the nearest remaining driver for N seconds.
- *   4. If they decline or the offer expires, MatchingScheduler calls us again for the next driver.
- *   5. If nobody takes it within the search timeout, the trip is cancelled (NO_DRIVERS_AVAILABLE).
- *
- * Phase 4 moves the trigger onto Kafka (RideRequested event) instead of a direct call.
+ *   4. On decline or expiry, try the next driver (triggered by Kafka, with MatchingScheduler as a safety net).
+ *   5. If nobody takes it within the search timeout, cancel with NO_DRIVERS_AVAILABLE.
  */
 @Service
 public class MatchingService {
@@ -42,7 +40,7 @@ public class MatchingService {
     private static final Duration TRIED_TTL = Duration.ofHours(1);
 
     private final TripRepository trips;
-    private final TripEventRepository events;
+    private final TripEventService events;
     private final DriverRepository drivers;
     private final DriverLocationService locations;
     private final StringRedisTemplate redis;
@@ -50,7 +48,7 @@ public class MatchingService {
     private final Duration offerTimeout;
     private final Duration searchTimeout;
 
-    public MatchingService(TripRepository trips, TripEventRepository events, DriverRepository drivers,
+    public MatchingService(TripRepository trips, TripEventService events, DriverRepository drivers,
                            DriverLocationService locations, StringRedisTemplate redis,
                            @Value("${rideai.matching.radius-km:5}") double radiusKm,
                            @Value("${rideai.matching.offer-timeout:15s}") Duration offerTimeout,
@@ -65,10 +63,10 @@ public class MatchingService {
         this.searchTimeout = searchTimeout;
     }
 
-    /** Offer the trip to the next-best driver, or give up if we've searched long enough. */
+    /** Offer the trip to the next-best driver, or give up if we've searched long enough. Safe to call twice. */
     @Transactional
     public void offerNext(long tripId) {
-        Trip trip = trips.findById(tripId).orElse(null);
+        Trip trip = trips.findByIdForUpdate(tripId).orElse(null);
         Instant now = Instant.now();
         if (trip == null || trip.getStatus() != TripStatus.REQUESTED || trip.hasLiveOffer(now)) {
             return;
@@ -79,28 +77,28 @@ public class MatchingService {
             trip.offerTo(next, now.plus(offerTimeout));
             redis.opsForSet().add(triedKey(tripId), String.valueOf(next));
             redis.expire(triedKey(tripId), TRIED_TTL);
-            events.record(tripId, "DRIVER_OFFERED", Map.of("driverId", next));
+            events.record(trip, "DRIVER_OFFERED", Map.of("driverId", next));
             log.info("Trip {} offered to driver {}", tripId, next);
             return;
         }
 
-        trip.clearOffer();
+        if (trip.getOfferedDriverId() != null) {
+            trip.clearOffer(); // the previous offer expired
+        }
         if (trip.getRequestedAt().plus(searchTimeout).isBefore(now)) {
             trip.moveTo(TripStatus.CANCELLED);
             trip.setCancelReason("NO_DRIVERS_AVAILABLE");
-            events.record(tripId, "NO_DRIVERS_AVAILABLE");
+            events.record(trip, "NO_DRIVERS_AVAILABLE");
             log.info("Trip {} cancelled: no drivers accepted within {}", tripId, searchTimeout);
         }
-        // Otherwise leave it REQUESTED; the scheduler retries in a couple of seconds.
+        // Otherwise stay REQUESTED; the scheduler retries in a couple of seconds.
     }
 
-    /** Driver said no: free the offer and move straight on to the next driver. */
+    /** Driver said no: free the offer. The DRIVER_DECLINED event on Kafka triggers the next offer. */
     @Transactional
     public void decline(Trip trip, long driverId) {
         trip.clearOffer();
-        events.record(trip.getId(), "DRIVER_DECLINED", Map.of("driverId", driverId));
-        trips.saveAndFlush(trip);
-        offerNext(trip.getId());
+        events.record(trip, "DRIVER_DECLINED", Map.of("driverId", driverId));
     }
 
     private Long pickDriver(Trip trip, Instant now) {

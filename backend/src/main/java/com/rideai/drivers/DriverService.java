@@ -1,23 +1,37 @@
 package com.rideai.drivers;
 
+import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 
+import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.rideai.common.ApiException;
 import com.rideai.common.GeoPoint;
 import com.rideai.drivers.DriverLocationService.NearbyDriver;
+import com.rideai.events.DriverLocationMessage;
+import com.rideai.events.KafkaEventPublisher;
+import com.rideai.rides.TripRepository;
+import com.rideai.rides.TripStatus;
 
 @Service
 public class DriverService {
 
     private final DriverRepository drivers;
     private final DriverLocationService locations;
+    private final TripRepository trips;
+    private final SimpMessagingTemplate ws;
+    private final KafkaEventPublisher kafka;
 
-    public DriverService(DriverRepository drivers, DriverLocationService locations) {
+    public DriverService(DriverRepository drivers, DriverLocationService locations, TripRepository trips,
+                         SimpMessagingTemplate ws, KafkaEventPublisher kafka) {
         this.drivers = drivers;
         this.locations = locations;
+        this.trips = trips;
+        this.ws = ws;
+        this.kafka = kafka;
     }
 
     @Transactional(readOnly = true)
@@ -48,6 +62,11 @@ public class DriverService {
         return driver;
     }
 
+    /**
+     * A GPS update. Free drivers are re-indexed for nearby search. Drivers on a trip also:
+     *  - push their position to the rider's app over WebSocket (low latency, in-process), and
+     *  - publish it to Kafka, where the trip monitor records the route and watches for delays.
+     */
     @Transactional(readOnly = true)
     public void updateLocation(long driverId, GeoPoint position) {
         Driver driver = get(driverId);
@@ -55,6 +74,15 @@ public class DriverService {
             throw ApiException.conflict("OFFLINE", "Go online before sending your location");
         }
         locations.update(driverId, position, driver.getStatus() == DriverStatus.AVAILABLE);
+
+        if (driver.getStatus() == DriverStatus.ON_TRIP) {
+            trips.findFirstByDriverIdAndStatusIn(driverId, TripStatus.ACTIVE).ifPresent(trip -> {
+                ws.convertAndSend("/topic/trips/" + trip.getId(),
+                    Map.of("type", "location", "lat", position.lat(), "lng", position.lng()));
+                kafka.driverLocation(new DriverLocationMessage(driverId, trip.getId(), trip.getStatus().name(),
+                    position.lat(), position.lng(), Instant.now()));
+            });
+        }
     }
 
     /** Called when a driver accepts a trip. */

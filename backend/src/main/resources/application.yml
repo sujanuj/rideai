@@ -1,6 +1,9 @@
 spring:
   application:
     name: rideai-backend
+  # Optional: read secrets like ANTHROPIC_API_KEY from the repo's .env file (never committed)
+  config:
+    import: "optional:file:../.env[.properties],optional:file:.env[.properties]"
 
   # Values come from environment variables when set (Docker, CI),
   # otherwise fall back to the local docker-compose defaults.
@@ -28,6 +31,8 @@ spring:
 
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      acks: all               # wait for the broker to confirm every event
     consumer:
       group-id: rideai-backend
       auto-offset-reset: earliest
@@ -64,3 +69,18 @@ rideai:
     offer-timeout: 15s      # how long a driver has to accept
     search-timeout: 90s     # give up and cancel after this long
     sweep-interval: 2s      # how often expired offers are re-offered
+  monitor:
+    delay-threshold: 5m     # raise DELAY_DETECTED when this far behind the estimate
+  websocket:
+    allowed-origins: ${WS_ALLOWED_ORIGINS:http://localhost:3000,http://127.0.0.1:3000}
+  ai:
+    api-key: ${ANTHROPIC_API_KEY:}          # empty = rule-based summaries, no chat
+    model: ${ANTHROPIC_MODEL:claude-haiku-4-5-20251001}
+    time-zone: America/Phoenix
+
+# Error monitoring: stays off until you set SENTRY_DSN (free account at sentry.io)
+sentry:
+  dsn: ${SENTRY_DSN:}
+  environment: ${SENTRY_ENVIRONMENT:local}
+  traces-sample-rate: 0.1
+  send-default-pii: false

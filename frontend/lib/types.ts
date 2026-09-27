@@ -33,6 +33,8 @@ export type Trip = {
   distanceMeters: number | null;
   durationSeconds: number | null;
   fareCents: number | null;
+  pickupEtaSeconds: number | null;
+  actualDistanceMeters: number | null;
   riderId: number;
   riderName: string;
   driver: DriverInfo | null;
@@ -64,3 +66,41 @@ export type DriverMe = {
   status: DriverStatus;
   position: LatLng | null;
 };
+
+/** Messages pushed on /topic/trips/{id}. */
+export type TripSocketMessage =
+  | { type: "trip"; event: string; trip: Trip }
+  | { type: "location"; lat: number; lng: number }
+  | { type: "insight" };
+
+export type TripMetrics = {
+  tripId: number;
+  requestedAt: string;
+  minutesToFindDriver: number | null;
+  offersMade: number;
+  offersDeclined: number;
+  pickupEtaMinutes: number | null;
+  pickupWaitMinutes: number | null;
+  pickupDelayMinutes: number | null;
+  estimatedRideMinutes: number | null;
+  actualRideMinutes: number | null;
+  estimatedDistanceKm: number | null;
+  actualDistanceKm: number | null;
+  detourPercent: number | null;
+  fareDollars: number | null;
+  delayAlerts: number;
+  riderPastTrips: number;
+  flags: string[];
+};
+
+export type Insight = {
+  tripId: number;
+  summary: string;
+  suggestions: { title: string; detail: string }[];
+  flags: string[];
+  metrics: TripMetrics;
+  model: string;
+  aiGenerated: boolean;
+};
+
+export type Answer = { answer: string; aiGenerated: boolean; questionsLeft: number };

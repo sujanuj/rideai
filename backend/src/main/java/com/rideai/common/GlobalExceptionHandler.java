@@ -3,6 +3,8 @@ package com.rideai.common;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
+import io.sentry.Sentry;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
@@ -44,6 +46,7 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     @ExceptionHandler(Exception.class)
     ProblemDetail handleUnexpected(Exception ex) {
         log.error("Unhandled error", ex);
+        Sentry.captureException(ex); // no-op unless SENTRY_DSN is set
         ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.INTERNAL_SERVER_ERROR, "Something went wrong");
         problem.setProperty("code", "INTERNAL_ERROR");
         return problem;
