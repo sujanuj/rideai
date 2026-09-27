@@ -1,0 +1,26 @@
+# The whole system in containers (for demos):
+#   docker compose -f docker-compose.yml -f docker-compose.full.yml up --build
+# Then open http://localhost:3000
+
+services:
+  backend:
+    build: ./backend
+    environment:
+      DB_URL: jdbc:postgresql://postgres:5432/rideai
+      DB_USER: rideai
+      DB_PASSWORD: rideai
+      REDIS_HOST: redis
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+    ports: ["8080:8080"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      kafka: { condition: service_started }
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        BACKEND_URL: http://backend:8080
+    ports: ["3000:3000"]
+    depends_on: [backend]

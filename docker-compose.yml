@@ -1,0 +1,57 @@
+# Infrastructure for local development.
+# Run the backend from your IDE and the frontend with `npm run dev`.
+#   docker compose up -d      start everything
+#   docker compose down       stop (data is kept in the pgdata volume)
+#   docker compose down -v    stop and wipe the database
+
+services:
+  postgres:
+    image: postgis/postgis:16-3.4
+    platform: linux/amd64   # PostGIS publishes Intel images only; Docker Desktop emulates it on Apple Silicon
+    environment:
+      POSTGRES_DB: rideai
+      POSTGRES_USER: rideai
+      POSTGRES_PASSWORD: rideai
+    ports: ["5433:5432"]   # 5433 on your Mac, so it never clashes with a locally installed Postgres
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rideai -d rideai"]
+      interval: 5s
+      retries: 10
+
+  redis:
+    image: redis:7
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 10
+
+  kafka:
+    image: apache/kafka:3.8.0          # single node, KRaft mode (no ZooKeeper)
+    ports: ["9092:9092"]
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,INTERNAL://:29092,CONTROLLER://:9093
+      # Apps on your Mac use localhost:9092; other containers use kafka:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,INTERNAL://kafka:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,INTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+
+  kafka-ui:
+    image: kafbat/kafka-ui:latest     # maintained fork of provectus kafka-ui
+    ports: ["8081:8080"]
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+    depends_on: [kafka]
+
+volumes:
+  pgdata:
