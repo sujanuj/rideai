@@ -43,3 +43,24 @@ management:
   endpoint:
     health:
       show-details: always   # fine locally; restrict before any public deploy
+
+# ---- RideAI settings ----
+rideai:
+  jwt:
+    # Dev-only default. Any real deployment MUST set JWT_SECRET (base64, 32+ bytes):
+    #   openssl rand -base64 32
+    secret: ${JWT_SECRET:sXqpPktAOzBe1o7vYN93l8VO254GSBGu2cBIqFF+6V8=}
+    ttl: 24h
+  routing:
+    enabled: ${ROUTING_ENABLED:true}         # false = straight-line estimates, no internet needed
+    osrm-url: ${OSRM_URL:https://router.project-osrm.org}
+  fare:
+    base-cents: 250
+    per-km-cents: 120
+    per-minute-cents: 30
+    minimum-cents: 600
+  matching:
+    radius-km: 5            # how far to look for drivers
+    offer-timeout: 15s      # how long a driver has to accept
+    search-timeout: 90s     # give up and cancel after this long
+    sweep-interval: 2s      # how often expired offers are re-offered
