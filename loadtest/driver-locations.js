@@ -3,21 +3,25 @@
 //   brew install k6
 //   k6 run loadtest/driver-locations.js                       # 50 drivers, 1 minute
 //   DRIVERS=200 DURATION=2m k6 run loadtest/driver-locations.js
+//   PACE=0 DRIVERS=100 k6 run loadtest/driver-locations.js    # no pause: find the maximum throughput
 //
-// Put the numbers from the summary on your resume, e.g.
-// "http_reqs ... 850/s, p(95)=38ms" → "sustained 850 location updates/s at p95 38 ms".
+// For your resume, read two lines from the summary:
+//   location_updates ....: 12345  205.7/s   ← [N] updates per second
+//   location_update_ms ..: ... p(95)=38.2ms ← [X] p95 latency
 
 import http from "k6/http";
 import { check, sleep } from "k6";
-import { Trend } from "k6/metrics";
+import { Counter, Trend } from "k6/metrics";
 
 const API = __ENV.API || "http://localhost:8080/api";
 const DRIVERS = Number(__ENV.DRIVERS || 50);
 const DURATION = __ENV.DURATION || "1m";
+const PACE = Number(__ENV.PACE ?? 1); // seconds each driver waits between updates (real app: 3)
 const CENTER = { lat: 33.4242, lng: -111.9281 };
 
 const locationLatency = new Trend("location_update_ms", true);
 const nearbyLatency = new Trend("nearby_search_ms", true);
+const locationUpdates = new Counter("location_updates");
 
 export const options = {
   scenarios: {
@@ -79,8 +83,8 @@ export function driver(data) {
   const token = data.drivers[(__VU - 1) % data.drivers.length];
   const res = http.put(`${API}/drivers/me/location`, JSON.stringify(jitter(4000)), auth(token));
   locationLatency.add(res.timings.duration);
-  check(res, { "location accepted": (r) => r.status === 204 });
-  sleep(1); // one update per driver per second (3x faster than the real app)
+  if (check(res, { "location accepted": (r) => r.status === 204 })) locationUpdates.add(1);
+  if (PACE > 0) sleep(PACE);
 }
 
 export function rider(data) {

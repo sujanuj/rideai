@@ -148,7 +148,7 @@ k6 run loadtest/driver-locations.js                       # 50 drivers sending G
 DRIVERS=200 DURATION=2m k6 run loadtest/driver-locations.js
 ```
 
-The summary reports requests per second and p95 latency for location updates and nearby searches. It fails if p95 > 200 ms or errors > 1%.
+`PACE=0 DRIVERS=100 k6 run loadtest/driver-locations.js` removes the pause between updates to find the maximum throughput. In the summary, `location_updates` shows updates per second and `location_update_ms` shows p95 latency. The run fails if p95 > 200 ms or errors > 1%.
 
 ## Project layout
 
