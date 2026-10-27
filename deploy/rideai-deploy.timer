@@ -1,0 +1,11 @@
+# Runs rideai-deploy.service 1 minute after boot, then every 2 minutes.
+# Check: systemctl list-timers rideai-deploy.timer
+[Unit]
+Description=Check GHCR for new RideAI images every 2 minutes
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=2min
+
+[Install]
+WantedBy=timers.target

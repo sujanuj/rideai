@@ -1,0 +1,18 @@
+# Pull-based deploy: fetch newer images from GHCR and restart only the containers that changed.
+# Started every 2 minutes by rideai-deploy.timer. Install on the server:
+#   sudo cp rideai-deploy.service rideai-deploy.timer /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now rideai-deploy.timer
+# Logs: journalctl -u rideai-deploy --since "1 hour ago"
+[Unit]
+Description=Deploy new RideAI images
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=ec2-user
+WorkingDirectory=/home/ec2-user/rideai
+ExecStart=/usr/bin/docker compose pull --quiet
+ExecStart=/usr/bin/docker compose up -d --remove-orphans
+# Old image versions would slowly fill the 20 GB disk
+ExecStartPost=/usr/bin/docker image prune -f
