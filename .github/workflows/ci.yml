@@ -58,6 +58,8 @@ jobs:
         run: |
           IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
           docker build -t "$IMAGE/backend:${GITHUB_SHA}" -t "$IMAGE/backend:latest" backend
-          docker build -t "$IMAGE/frontend:${GITHUB_SHA}" -t "$IMAGE/frontend:latest" frontend
+          # BACKEND_URL is baked in at build time: the backend container's name in docker compose
+          docker build --build-arg BACKEND_URL=http://backend:8080 \
+            -t "$IMAGE/frontend:${GITHUB_SHA}" -t "$IMAGE/frontend:latest" frontend
           docker push --all-tags "$IMAGE/backend"
           docker push --all-tags "$IMAGE/frontend"
