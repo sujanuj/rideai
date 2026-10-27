@@ -1,0 +1,121 @@
+# The whole system on one small EC2 server (t3.small: 2 GB RAM + 2 GB swap).
+# Images are built on the Mac and copied over (see AWS-NOTES.md), so nothing is built here.
+# Secrets come from .env next to this file on the server (never committed):
+#   POSTGRES_PASSWORD, JWT_SECRET, WS_ALLOWED_ORIGINS, DUCKDNS_TOKEN, ANTHROPIC_API_KEY (optional)
+#
+#   docker compose up -d       start everything (and again after every reboot: restart policy)
+#   docker compose ps          what's running
+#   docker compose logs -f backend
+#
+# Keep ~/rideai/docker-compose.yml on the server in sync with this file (scp after edits).
+
+services:
+  postgres:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_DB: rideai
+      POSTGRES_USER: rideai
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rideai -d rideai"]
+      interval: 5s
+      retries: 10
+    restart: unless-stopped
+    # no ports: only the backend container can reach it
+
+  redis:
+    image: redis:7
+    command: ["redis-server", "--maxmemory", "64mb", "--maxmemory-policy", "allkeys-lru"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 10
+    restart: unless-stopped
+
+  kafka:
+    image: apache/kafka:3.8.0          # single node, KRaft mode, reachable only inside the server
+    environment:
+      KAFKA_HEAP_OPTS: -Xms192m -Xmx256m   # default is 1 GB, which would not fit
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: INTERNAL://:29092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+    restart: unless-stopped
+
+  backend:
+    image: rideai-backend
+    pull_policy: never                 # loaded with docker load, not from a registry
+    environment:
+      JAVA_TOOL_OPTIONS: -Xmx448m -XX:MaxMetaspaceSize=160m
+      DB_URL: jdbc:postgresql://postgres:5432/rideai
+      DB_USER: rideai
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      REDIS_HOST: redis
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+      # The page's origin must be listed for the WebSocket: https://rideai-sujanuj.duckdns.org
+      WS_ALLOWED_ORIGINS: ${WS_ALLOWED_ORIGINS:?set WS_ALLOWED_ORIGINS in .env}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    # no ports: reached only through Caddy (/ws) and the frontend (/api)
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      kafka: { condition: service_started }
+    restart: unless-stopped
+
+  frontend:
+    image: rideai-frontend
+    pull_policy: never
+    depends_on: [backend]
+    restart: unless-stopped
+    # no ports: Caddy is the only way in
+
+  # HTTPS front door for rideai-sujanuj.duckdns.org (see Caddyfile next to this file)
+  caddy:
+    image: caddy:2.8
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data             # the certificate; kept so restarts don't re-request it
+    depends_on: [frontend, backend]
+    restart: unless-stopped
+
+  # Points rideai-sujanuj.duckdns.org at this server's current public IP (it changes on every start)
+  duckdns:
+    image: curlimages/curl:8.10.1
+    environment:
+      DUCKDNS_TOKEN: ${DUCKDNS_TOKEN:?set DUCKDNS_TOKEN in .env}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        while true; do
+          echo "$$(date) duckdns: $$(curl -fsS "https://www.duckdns.org/update?domains=rideai-sujanuj&token=$$DUCKDNS_TOKEN&ip=")"
+          sleep 300
+        done
+    restart: unless-stopped
+
+  # 15 fake drivers around ASU Tempe, so there's something to book.
+  # simulate.mjs is copied next to this file: ~/rideai/simulator/simulate.mjs
+  simulator:
+    image: node:22-alpine
+    working_dir: /app
+    volumes: ["./simulator:/app:ro"]
+    command: ["node", "simulate.mjs"]
+    environment:
+      API: http://backend:8080/api
+      DRIVERS: "15"
+    depends_on: [backend]
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  caddy_data:
