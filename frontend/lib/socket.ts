@@ -5,11 +5,12 @@ import { useEffect, useRef, useState } from "react";
 
 // Live updates over WebSocket + STOMP, straight to Spring Boot on port 8080
 // (Next's dev proxy doesn't forward WebSocket upgrades).
+// Over HTTPS (the deployed site) Caddy routes /ws to the backend on the same host instead.
 
 function socketUrl(): string {
   if (process.env.NEXT_PUBLIC_WS_URL) return process.env.NEXT_PUBLIC_WS_URL;
-  const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-  return `${protocol}://${window.location.hostname}:8080/ws`;
+  if (window.location.protocol === "https:") return `wss://${window.location.host}/ws`;
+  return `ws://${window.location.hostname}:8080/ws`;
 }
 
 /** One authenticated STOMP connection that reconnects by itself. */

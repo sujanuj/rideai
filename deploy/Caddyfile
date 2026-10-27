@@ -1,0 +1,9 @@
+# Caddy: the server's front door. Gets a free HTTPS certificate from Let's Encrypt
+# for this name and renews it by itself (needs ports 80 and 443 open).
+rideai-sujanuj.duckdns.org {
+	# Live updates (WebSocket + STOMP) go straight to Spring Boot
+	reverse_proxy /ws* backend:8080
+
+	# Everything else is the Next.js app (which proxies /api to the backend itself)
+	reverse_proxy frontend:3000
+}
